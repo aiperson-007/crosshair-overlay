@@ -168,7 +168,6 @@ class CrosshairOverlay:
         self.tray_icon = pystray.Icon(
             "CrosshairOverlay", icon_img, "🎯 准星工具", menu
         )
-        # 在线程中运行托盘
         import threading
         t = threading.Thread(target=self.tray_icon.run, daemon=True)
         t.start()
@@ -176,27 +175,37 @@ class CrosshairOverlay:
     def _build_tray_menu(self):
         cfg = self.config
 
-        # ── 样式子菜单 ──
+        # ── 样式子菜单（用 checked callable 动态判断）──
         style_items = []
         for s in STYLES:
-            checked = (cfg["style"] == s)
-            label = f"{'✅ ' if checked else ''}{STYLE_NAMES[s]}"
-            style_items.append(Item(label, lambda _, s=s: self._set_style(s)))
+            style_items.append(Item(
+                STYLE_NAMES[s],
+                lambda _, s=s: self._set_style(s),
+                checked=lambda _, s=s: self.config["style"] == s,
+                radio=True,
+            ))
 
         # ── 颜色子菜单 ──
         color_items = []
         for c in PRESET_COLORS:
-            checked = (cfg["color"].upper() == c.upper())
-            label = f"{'✅ ' if checked else ''}{COLOR_NAMES.get(c, c)}"
-            color_items.append(Item(label, lambda _, c=c: self._set_color(c)))
+            color_items.append(Item(
+                COLOR_NAMES.get(c, c),
+                lambda _, c=c: self._set_color(c),
+                checked=lambda _, c=c: self.config["color"].upper() == c.upper(),
+                radio=True,
+            ))
 
         # ── 大小子菜单 ──
         size_items = [
-            Item("小 (10)", lambda: self._set_size(10)),
-            Item("中 (20)", lambda: self._set_size(20)),
-            Item("大 (30)", lambda: self._set_size(30)),
-            Item("特大 (40)", lambda: self._set_size(40)),
-            Item("—————————", lambda: None),
+            Item("小 (10)", lambda: self._set_size(10),
+                 checked=lambda _: self.config["size"] == 10, radio=True),
+            Item("中 (20)", lambda: self._set_size(20),
+                 checked=lambda _: self.config["size"] == 20, radio=True),
+            Item("大 (30)", lambda: self._set_size(30),
+                 checked=lambda _: self.config["size"] == 30, radio=True),
+            Item("特大 (40)", lambda: self._set_size(40),
+                 checked=lambda _: self.config["size"] == 40, radio=True),
+            pystray.Menu.SEPARATOR,
             Item("➕ 增大 (+5)", lambda: self._adjust_size(5)),
             Item("➖ 减小 (-5)", lambda: self._adjust_size(-5)),
         ]
@@ -204,30 +213,36 @@ class CrosshairOverlay:
         # ── 粗细子菜单 ──
         thick_items = []
         for t in [1, 2, 3, 4, 5]:
-            checked = (cfg["thickness"] == t)
-            label = f"{'✅ ' if checked else ''}{t}px"
-            thick_items.append(Item(label, lambda _, t=t: self._set_thickness(t)))
+            thick_items.append(Item(
+                f"{t}px",
+                lambda _, t=t: self._set_thickness(t),
+                checked=lambda _, t=t: self.config["thickness"] == t,
+                radio=True,
+            ))
 
         # ── 透明度子菜单 ──
         opacity_items = []
         for o in [0.5, 0.6, 0.7, 0.8, 0.9, 1.0]:
-            checked = (abs(cfg["opacity"] - o) < 0.01)
-            label = f"{'✅ ' if checked else ''}{int(o * 100)}%"
-            opacity_items.append(Item(label, lambda _, o=o: self._set_opacity(o)))
+            opacity_items.append(Item(
+                f"{int(o * 100)}%",
+                lambda _, o=o: self._set_opacity(o),
+                checked=lambda _, o=o: abs(self.config["opacity"] - o) < 0.01,
+                radio=True,
+            ))
 
         # ── 中心点大小 ──
         dot_items = []
         for d in [0, 1, 2, 3, 4, 5]:
-            checked = (cfg["dot_size"] == d)
-            label = f"{'✅ ' if checked else ''}{d}px"
-            dot_items.append(Item(label, lambda _, d=d: self._set_dot_size(d)))
-
-        # ── 描边开关 ──
-        outline_label = f"{'✅ ' if cfg['outline'] else ''}黑色描边"
+            dot_items.append(Item(
+                f"{d}px",
+                lambda _, d=d: self._set_dot_size(d),
+                checked=lambda _, d=d: self.config["dot_size"] == d,
+                radio=True,
+            ))
 
         menu = pystray.Menu(
             Item(
-                f"{'🟢 显示中' if self.visible else '🔴 已隐藏'}",
+                lambda _: "🟢 显示中" if self.visible else "🔴 已隐藏",
                 lambda: self.toggle_visibility(),
                 default=True,
             ),
@@ -238,16 +253,21 @@ class CrosshairOverlay:
             Item("📐 粗细", pystray.Menu(*thick_items)),
             Item("🔍 透明度", pystray.Menu(*opacity_items)),
             Item("⏺ 中心点", pystray.Menu(*dot_items)),
-            Item(outline_label, lambda: self._toggle_outline()),
+            Item(lambda _: "✅ 黑色描边" if self.config["outline"] else "⬜ 黑色描边",
+                 lambda: self._toggle_outline(),
+                 checked=lambda _: self.config["outline"]),
             pystray.Menu.SEPARATOR,
             Item("❌ 退出", lambda: self.quit()),
         )
         return menu
 
     def _refresh_tray(self):
-        """重建托盘菜单（刷新勾选状态）"""
+        """更新托盘菜单勾选状态"""
         if self.tray_icon:
-            self.tray_icon.menu = self._build_tray_menu()
+            try:
+                self.tray_icon.update_menu()
+            except Exception:
+                pass
 
     # ════════════════════════════════════════
     #  配置操作
