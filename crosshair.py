@@ -135,7 +135,6 @@ class ConfigPanel:
                 bg=c, selectcolor=c, activebackground=c,
                 indicatoron=False, width=3, height=1, bd=2,
                 command=self._on_change,
-                selectforeground=c,  # 避免文字
             ).pack(side="left", padx=3)
 
         # 颜色名称提示
