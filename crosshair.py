@@ -9,6 +9,7 @@ import tkinter as tk
 import json
 import os
 import sys
+import copy
 from pathlib import Path
 
 # pystray 导入（系统托盘）
@@ -80,8 +81,19 @@ def load_config() -> dict:
 
 def save_config(cfg: dict):
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    # 深拷贝，过滤掉任何非 JSON 序列化的对象
+    clean = {}
+    for k, v in cfg.items():
+        if isinstance(v, (str, int, float, bool, type(None))):
+            clean[k] = v
+        elif isinstance(v, dict):
+            clean[k] = {kk: vv for kk, vv in v.items()
+                        if isinstance(vv, (str, int, float, bool, type(None)))}
+        elif isinstance(v, list):
+            clean[k] = [i for i in v
+                        if isinstance(i, (str, int, float, bool, type(None)))]
     with open(CONFIG_FILE, "w", encoding="utf-8") as f:
-        json.dump(cfg, f, indent=2, ensure_ascii=False)
+        json.dump(clean, f, indent=2, ensure_ascii=False)
 
 
 def create_tray_icon(size=64) -> Image.Image:
@@ -173,9 +185,8 @@ class CrosshairOverlay:
         t.start()
 
     def _build_tray_menu(self):
-        cfg = self.config
-
-        # ── 样式子菜单（用 checked callable 动态判断）──
+        # 注意：不要把 self.config 的引用传给 pystray 回调外的地方
+        # pystray 内部可能会往 menu 对象上附加属性污染 config
         style_items = []
         for s in STYLES:
             style_items.append(Item(
