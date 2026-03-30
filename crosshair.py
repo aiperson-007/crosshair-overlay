@@ -215,6 +215,12 @@ class ConfigPanel:
 
     def _on_change(self):
         """配置变了，实时更新准星"""
+        # UI 构建期间可能被回调，检查所有变量是否已就绪
+        for attr in ("style_var", "color_var", "size_var", "thick_var",
+                      "dot_var", "opacity_var", "outline_var"):
+            if not hasattr(self, attr):
+                return
+
         cfg = self.app.config
         cfg["style"] = self.style_var.get()
         cfg["color"] = self.color_var.get()
