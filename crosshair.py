@@ -15,10 +15,14 @@ from pathlib import Path
 try:
     import pystray
     from pystray import MenuItem as Item
-    from PIL import Image, ImageDraw, ImageFont
+    from PIL import Image, ImageDraw
     HAS_TRAY = True
 except ImportError:
     HAS_TRAY = False
+    pystray = None
+    Item = None
+    Image = None
+    ImageDraw = None
 
 # ─── 默认配置 ───
 DEFAULT_CONFIG = {
