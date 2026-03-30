@@ -6,7 +6,7 @@ a = Analysis(
     pathex=[],
     binaries=[],
     datas=[],
-    hiddenimports=[],
+    hiddenimports=['pystray._win32'],
     noarchive=False,
 )
 
@@ -25,7 +25,7 @@ exe = EXE(
     upx=True,
     upx_exclude=[],
     runtime_tmpdir=None,
-    console=False,        # 无控制台窗口
+    console=False,
     disable_windowed_traceback=False,
     icon=None,
 )
