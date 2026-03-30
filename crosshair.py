@@ -9,7 +9,7 @@ import tkinter as tk
 import json
 import os
 import sys
-import copy
+import threading
 from pathlib import Path
 
 # pystray 导入（系统托盘）
@@ -81,7 +81,6 @@ def load_config() -> dict:
 
 def save_config(cfg: dict):
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-    # 深拷贝，过滤掉任何非 JSON 序列化的对象
     clean = {}
     for k, v in cfg.items():
         if isinstance(v, (str, int, float, bool, type(None))):
@@ -97,19 +96,16 @@ def save_config(cfg: dict):
 
 
 def create_tray_icon(size=64) -> Image.Image:
-    """生成一个简单的十字准星图标"""
     img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
     draw = ImageDraw.Draw(img)
     cx, cy = size // 2, size // 2
     arm = size // 3
     gap = 4
     w = 2
-    # 十字
     draw.line([(cx, cy - arm), (cx, cy - gap)], fill=(0, 255, 0, 255), width=w)
     draw.line([(cx, cy + gap), (cx, cy + arm)], fill=(0, 255, 0, 255), width=w)
     draw.line([(cx - arm, cy), (cx - gap, cy)], fill=(0, 255, 0, 255), width=w)
     draw.line([(cx + gap, cy), (cx + arm, cy)], fill=(0, 255, 0, 255), width=w)
-    # 中心点
     draw.ellipse([cx - 2, cy - 2, cx + 2, cy + 2], fill=(0, 255, 0, 255))
     return img
 
@@ -127,8 +123,6 @@ class CrosshairOverlay:
 
         # ─── 主窗口 ───
         self.root = tk.Tk()
-        self.root.withdraw()  # 先隐藏，等画好再显示
-
         self.screen_w = self.root.winfo_screenwidth()
         self.screen_h = self.root.winfo_screenheight()
 
@@ -159,94 +153,88 @@ class CrosshairOverlay:
 
         # 绘制准星
         self.draw_crosshair()
-        self.root.deiconify()
 
         # ─── 系统托盘 ───
         if HAS_TRAY:
             self._setup_tray()
-        else:
-            print("⚠️ 未安装 pystray/pillow，系统托盘不可用")
-            print("   运行: pip install pystray pillow")
 
         self.root.mainloop()
 
     # ════════════════════════════════════════
-    #  系统托盘
+    #  系统托盘（在独立线程运行）
     # ════════════════════════════════════════
 
     def _setup_tray(self):
         icon_img = create_tray_icon()
-        menu = self._build_tray_menu()
         self.tray_icon = pystray.Icon(
-            "CrosshairOverlay", icon_img, "🎯 准星工具", menu
+            "CrosshairOverlay", icon_img, "🎯 准星工具",
+            self._build_tray_menu()
         )
-        import threading
         t = threading.Thread(target=self.tray_icon.run, daemon=True)
         t.start()
 
     def _build_tray_menu(self):
-        # 注意：不要把 self.config 的引用传给 pystray 回调外的地方
-        # pystray 内部可能会往 menu 对象上附加属性污染 config
+        # ── 样式 ──
         style_items = []
         for s in STYLES:
             style_items.append(Item(
                 STYLE_NAMES[s],
-                lambda _, s=s: self._set_style(s),
+                lambda _, s=s: self._on_tray_set_style(s),
                 checked=lambda _, s=s: self.config["style"] == s,
                 radio=True,
             ))
 
-        # ── 颜色子菜单 ──
+        # ── 颜色 ──
         color_items = []
         for c in PRESET_COLORS:
             color_items.append(Item(
                 COLOR_NAMES.get(c, c),
-                lambda _, c=c: self._set_color(c),
+                lambda _, c=c: self._on_tray_set_color(c),
                 checked=lambda _, c=c: self.config["color"].upper() == c.upper(),
                 radio=True,
             ))
 
-        # ── 大小子菜单 ──
+        # ── 大小 ──
         size_items = [
-            Item("小 (10)", lambda: self._set_size(10),
+            Item("小 (10)", lambda: self._on_tray_set_size(10),
                  checked=lambda _: self.config["size"] == 10, radio=True),
-            Item("中 (20)", lambda: self._set_size(20),
+            Item("中 (20)", lambda: self._on_tray_set_size(20),
                  checked=lambda _: self.config["size"] == 20, radio=True),
-            Item("大 (30)", lambda: self._set_size(30),
+            Item("大 (30)", lambda: self._on_tray_set_size(30),
                  checked=lambda _: self.config["size"] == 30, radio=True),
-            Item("特大 (40)", lambda: self._set_size(40),
+            Item("特大 (40)", lambda: self._on_tray_set_size(40),
                  checked=lambda _: self.config["size"] == 40, radio=True),
             pystray.Menu.SEPARATOR,
-            Item("➕ 增大 (+5)", lambda: self._adjust_size(5)),
-            Item("➖ 减小 (-5)", lambda: self._adjust_size(-5)),
+            Item("➕ 增大 (+5)", lambda: self._on_tray_adjust_size(5)),
+            Item("➖ 减小 (-5)", lambda: self._on_tray_adjust_size(-5)),
         ]
 
-        # ── 粗细子菜单 ──
+        # ── 粗细 ──
         thick_items = []
         for t in [1, 2, 3, 4, 5]:
             thick_items.append(Item(
                 f"{t}px",
-                lambda _, t=t: self._set_thickness(t),
+                lambda _, t=t: self._on_tray_set_thickness(t),
                 checked=lambda _, t=t: self.config["thickness"] == t,
                 radio=True,
             ))
 
-        # ── 透明度子菜单 ──
+        # ── 透明度 ──
         opacity_items = []
         for o in [0.5, 0.6, 0.7, 0.8, 0.9, 1.0]:
             opacity_items.append(Item(
                 f"{int(o * 100)}%",
-                lambda _, o=o: self._set_opacity(o),
+                lambda _, o=o: self._on_tray_set_opacity(o),
                 checked=lambda _, o=o: abs(self.config["opacity"] - o) < 0.01,
                 radio=True,
             ))
 
-        # ── 中心点大小 ──
+        # ── 中心点 ──
         dot_items = []
         for d in [0, 1, 2, 3, 4, 5]:
             dot_items.append(Item(
                 f"{d}px",
-                lambda _, d=d: self._set_dot_size(d),
+                lambda _, d=d: self._on_tray_set_dot_size(d),
                 checked=lambda _, d=d: self.config["dot_size"] == d,
                 radio=True,
             ))
@@ -254,7 +242,7 @@ class CrosshairOverlay:
         menu = pystray.Menu(
             Item(
                 lambda _: "🟢 显示中" if self.visible else "🔴 已隐藏",
-                lambda: self.toggle_visibility(),
+                lambda _: self._on_tray_toggle(),
                 default=True,
             ),
             pystray.Menu.SEPARATOR,
@@ -265,70 +253,115 @@ class CrosshairOverlay:
             Item("🔍 透明度", pystray.Menu(*opacity_items)),
             Item("⏺ 中心点", pystray.Menu(*dot_items)),
             Item(lambda _: "✅ 黑色描边" if self.config["outline"] else "⬜ 黑色描边",
-                 lambda: self._toggle_outline(),
+                 lambda _: self._on_tray_toggle_outline(),
                  checked=lambda _: self.config["outline"]),
             pystray.Menu.SEPARATOR,
-            Item("❌ 退出", lambda: self.quit()),
+            Item("❌ 退出", lambda _: self._on_tray_quit()),
         )
         return menu
 
-    def _refresh_tray(self):
-        """更新托盘菜单勾选状态"""
+    def _refresh_tray_menu(self):
+        """重建托盘菜单（在 pystray 线程中安全调用）"""
         if self.tray_icon:
             try:
-                self.tray_icon.update_menu()
+                self.tray_icon.menu = self._build_tray_menu()
             except Exception:
                 pass
 
-    # ════════════════════════════════════════
-    #  配置操作
-    # ════════════════════════════════════════
+    # ─── 托盘回调：通过 root.after 调度到 tkinter 主线程 ───
 
-    def _set_style(self, style):
-        self.config["style"] = style
+    def _on_tray_set_style(self, s):
+        self.root.after(0, self._do_set_style, s)
+
+    def _on_tray_set_color(self, c):
+        self.root.after(0, self._do_set_color, c)
+
+    def _on_tray_set_size(self, s):
+        self.root.after(0, self._do_set_size, s)
+
+    def _on_tray_adjust_size(self, d):
+        self.root.after(0, self._do_adjust_size, d)
+
+    def _on_tray_set_thickness(self, t):
+        self.root.after(0, self._do_set_thickness, t)
+
+    def _on_tray_set_opacity(self, o):
+        self.root.after(0, self._do_set_opacity, o)
+
+    def _on_tray_set_dot_size(self, d):
+        self.root.after(0, self._do_set_dot_size, d)
+
+    def _on_tray_toggle(self):
+        self.root.after(0, self._do_toggle)
+
+    def _on_tray_toggle_outline(self):
+        self.root.after(0, self._do_toggle_outline)
+
+    def _on_tray_quit(self):
+        self.root.after(0, self.quit)
+
+    # ─── 实际执行（在 tkinter 主线程）───
+
+    def _do_set_style(self, s):
+        self.config["style"] = s
         save_config(self.config)
         self.draw_crosshair()
-        self._refresh_tray()
+        self._refresh_tray_menu()
 
-    def _set_color(self, color):
-        self.config["color"] = color
+    def _do_set_color(self, c):
+        self.config["color"] = c
         save_config(self.config)
         self.draw_crosshair()
         try:
-            self.color_index = PRESET_COLORS.index(color.upper())
+            self.color_index = PRESET_COLORS.index(c.upper())
         except ValueError:
             pass
-        self._refresh_tray()
+        self._refresh_tray_menu()
 
-    def _set_size(self, size):
-        self.config["size"] = size
+    def _do_set_size(self, s):
+        self.config["size"] = s
         save_config(self.config)
         self.draw_crosshair()
-        self._refresh_tray()
+        self._refresh_tray_menu()
 
-    def _set_thickness(self, t):
+    def _do_adjust_size(self, d):
+        self.config["size"] = max(2, self.config["size"] + d)
+        save_config(self.config)
+        self.draw_crosshair()
+        self._refresh_tray_menu()
+
+    def _do_set_thickness(self, t):
         self.config["thickness"] = t
         save_config(self.config)
         self.draw_crosshair()
-        self._refresh_tray()
+        self._refresh_tray_menu()
 
-    def _set_opacity(self, o):
+    def _do_set_opacity(self, o):
         self.config["opacity"] = o
         save_config(self.config)
         self.root.attributes("-alpha", o)
-        self._refresh_tray()
+        self._refresh_tray_menu()
 
-    def _set_dot_size(self, d):
+    def _do_set_dot_size(self, d):
         self.config["dot_size"] = d
         save_config(self.config)
         self.draw_crosshair()
-        self._refresh_tray()
+        self._refresh_tray_menu()
 
-    def _toggle_outline(self):
+    def _do_toggle(self):
+        self.visible = not self.visible
+        if self.visible:
+            self.root.deiconify()
+            self.draw_crosshair()
+        else:
+            self.root.withdraw()
+        self._refresh_tray_menu()
+
+    def _do_toggle_outline(self):
         self.config["outline"] = not self.config["outline"]
         save_config(self.config)
         self.draw_crosshair()
-        self._refresh_tray()
+        self._refresh_tray_menu()
 
     # ════════════════════════════════════════
     #  准星绘制
@@ -394,42 +427,25 @@ class CrosshairOverlay:
             circle_ring(cx, cy, size)
 
     # ════════════════════════════════════════
-    #  快捷键 & 可见性
+    #  快捷键（在 tkinter 主线程中直接执行）
     # ════════════════════════════════════════
 
     def _bind_hotkeys(self):
         hk = self.config.get("hotkeys", {})
-        self.root.bind(f"<{hk.get('toggle', 'F1')}>", lambda e: self.toggle_visibility())
-        self.root.bind(f"<{hk.get('color', 'F2')}>", lambda e: self.cycle_color())
-        self.root.bind(f"<{hk.get('size_up', 'F3')}>", lambda e: self.adjust_size(5))
-        self.root.bind(f"<{hk.get('size_down', 'F4')}>", lambda e: self.adjust_size(-5))
-
-    def toggle_visibility(self):
-        self.visible = not self.visible
-        if self.visible:
-            self.root.deiconify()
-            self.draw_crosshair()
-        else:
-            self.root.withdraw()
-        self._refresh_tray()
-
-    def cycle_color(self):
-        self.color_index = (self.color_index + 1) % len(PRESET_COLORS)
-        self.config["color"] = PRESET_COLORS[self.color_index]
-        save_config(self.config)
-        self.draw_crosshair()
-        self._refresh_tray()
-
-    def adjust_size(self, delta: int):
-        self.config["size"] = max(2, self.config["size"] + delta)
-        save_config(self.config)
-        self.draw_crosshair()
-        self._refresh_tray()
+        self.root.bind(f"<{hk.get('toggle', 'F1')}>", lambda e: self._do_toggle())
+        self.root.bind(f"<{hk.get('color', 'F2')}>", lambda e: self._do_set_color(
+            PRESET_COLORS[(self.color_index + 1) % len(PRESET_COLORS)]
+        ))
+        self.root.bind(f"<{hk.get('size_up', 'F3')}>", lambda e: self._do_adjust_size(5))
+        self.root.bind(f"<{hk.get('size_down', 'F4')}>", lambda e: self._do_adjust_size(-5))
 
     def quit(self):
         save_config(self.config)
         if self.tray_icon:
-            self.tray_icon.stop()
+            try:
+                self.tray_icon.stop()
+            except Exception:
+                pass
         self.root.destroy()
         sys.exit(0)
 
