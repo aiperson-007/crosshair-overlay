@@ -1,31 +1,17 @@
 # -*- mode: python ; coding: utf-8 -*-
-# PyInstaller spec for Crosshair Overlay
-
 a = Analysis(
     ['crosshair.py'],
     pathex=[],
     binaries=[],
     datas=[],
-    hiddenimports=['pystray._win32'],
+    hiddenimports=[],
     noarchive=False,
 )
-
 pyz = PYZ(a.pure)
-
 exe = EXE(
-    pyz,
-    a.scripts,
-    a.binaries,
-    a.datas,
-    [],
+    pyz, a.scripts, a.binaries, a.datas, [],
     name='CrosshairOverlay',
-    debug=False,
-    bootloader_ignore_signals=False,
-    strip=False,
-    upx=True,
-    upx_exclude=[],
-    runtime_tmpdir=None,
-    console=False,
-    disable_windowed_traceback=False,
-    icon=None,
+    debug=False, bootloader_ignore_signals=False, strip=False,
+    upx=True, upx_exclude=[], runtime_tmpdir=None,
+    console=False, disable_windowed_traceback=False, icon=None,
 )

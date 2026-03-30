@@ -2,28 +2,16 @@
 """
 🎯 桌面准星工具 — Crosshair Overlay
 FPS 游戏专用，屏幕中央始终显示可配置准星
-支持：系统托盘右键菜单配置、快捷键、自动记忆
+支持：配置面板窗口、快捷键、自动记忆
+纯 tkinter 实现，无外部依赖
 """
 
 import tkinter as tk
+from tkinter import ttk
 import json
 import os
 import sys
-import threading
 from pathlib import Path
-
-# pystray 导入（系统托盘）
-try:
-    import pystray
-    from pystray import MenuItem as Item
-    from PIL import Image, ImageDraw
-    HAS_TRAY = True
-except ImportError:
-    HAS_TRAY = False
-    pystray = None
-    Item = None
-    Image = None
-    ImageDraw = None
 
 # ─── 默认配置 ───
 DEFAULT_CONFIG = {
@@ -36,12 +24,6 @@ DEFAULT_CONFIG = {
     "dot_size": 2,
     "outline": True,
     "outline_color": "#000000",
-    "hotkeys": {
-        "toggle": "F1",
-        "color": "F2",
-        "size_up": "F3",
-        "size_down": "F4",
-    }
 }
 
 PRESET_COLORS = [
@@ -70,10 +52,7 @@ def load_config() -> dict:
         try:
             with open(CONFIG_FILE, "r", encoding="utf-8") as f:
                 saved = json.load(f)
-            cfg = {**DEFAULT_CONFIG, **saved}
-            if "hotkeys" in saved:
-                cfg["hotkeys"] = {**DEFAULT_CONFIG["hotkeys"], **saved["hotkeys"]}
-            return cfg
+            return {**DEFAULT_CONFIG, **saved}
         except Exception:
             pass
     return {**DEFAULT_CONFIG}
@@ -85,36 +64,184 @@ def save_config(cfg: dict):
     for k, v in cfg.items():
         if isinstance(v, (str, int, float, bool, type(None))):
             clean[k] = v
-        elif isinstance(v, dict):
-            clean[k] = {kk: vv for kk, vv in v.items()
-                        if isinstance(vv, (str, int, float, bool, type(None)))}
-        elif isinstance(v, list):
-            clean[k] = [i for i in v
-                        if isinstance(i, (str, int, float, bool, type(None)))]
     with open(CONFIG_FILE, "w", encoding="utf-8") as f:
         json.dump(clean, f, indent=2, ensure_ascii=False)
 
 
-def create_tray_icon(size=64) -> Image.Image:
-    img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
-    draw = ImageDraw.Draw(img)
-    cx, cy = size // 2, size // 2
-    arm = size // 3
-    gap = 4
-    w = 2
-    draw.line([(cx, cy - arm), (cx, cy - gap)], fill=(0, 255, 0, 255), width=w)
-    draw.line([(cx, cy + gap), (cx, cy + arm)], fill=(0, 255, 0, 255), width=w)
-    draw.line([(cx - arm, cy), (cx - gap, cy)], fill=(0, 255, 0, 255), width=w)
-    draw.line([(cx + gap, cy), (cx + arm, cy)], fill=(0, 255, 0, 255), width=w)
-    draw.ellipse([cx - 2, cy - 2, cx + 2, cy + 2], fill=(0, 255, 0, 255))
-    return img
+# ════════════════════════════════════════
+#  配置面板
+# ════════════════════════════════════════
 
+class ConfigPanel:
+    """独立的配置面板窗口"""
+
+    def __init__(self, app: "CrosshairOverlay"):
+        self.app = app
+        self.win = None
+
+    def show(self):
+        if self.win and self.win.winfo_exists():
+            self.win.lift()
+            self.win.focus_force()
+            return
+
+        self.win = tk.Toplevel(self.app.root)
+        self.win.title("🎯 准星设置")
+        self.win.geometry("320x520+100+100")
+        self.win.resizable(False, False)
+        self.win.attributes("-topmost", True)
+        self.win.configure(bg="#1e1e1e")
+
+        # 关闭时清理
+        self.win.protocol("on_close", self._on_close)
+
+        self._build_ui()
+        self.win.focus_force()
+
+    def _on_close(self):
+        self.win.destroy()
+        self.win = None
+
+    def _build_ui(self):
+        cfg = self.app.config
+        bg = "#1e1e1e"
+        fg = "#ffffff"
+        accent = "#00BFFF"
+
+        # 标题
+        tk.Label(self.win, text="🎯 准星设置", font=("Microsoft YaHei", 16, "bold"),
+                 fg=accent, bg=bg).pack(pady=(15, 10))
+
+        # ── 样式 ──
+        self._section_label("样式")
+        self.style_var = tk.StringVar(value=cfg["style"])
+        frame = tk.Frame(self.win, bg=bg)
+        frame.pack(pady=2)
+        for s in STYLES:
+            tk.Radiobutton(
+                frame, text=STYLE_NAMES[s], value=s, variable=self.style_var,
+                fg=fg, bg=bg, selectcolor="#333", activebackground=bg,
+                command=self._on_change
+            ).pack(side="left", padx=8)
+
+        # ── 颜色 ──
+        self._section_label("颜色")
+        self.color_var = tk.StringVar(value=cfg["color"])
+        frame = tk.Frame(self.win, bg=bg)
+        frame.pack(pady=2)
+        for c in PRESET_COLORS:
+            tk.Radiobutton(
+                frame, text="", value=c, variable=self.color_var,
+                bg=c, selectcolor=c, activebackground=c,
+                indicatoron=False, width=3, height=1, bd=2,
+                command=self._on_change,
+                selectforeground=c,  # 避免文字
+            ).pack(side="left", padx=3)
+
+        # 颜色名称提示
+        self.color_label = tk.Label(
+            self.win, text=COLOR_NAMES.get(cfg["color"], cfg["color"]),
+            fg="#aaa", bg=bg, font=("Microsoft YaHei", 9)
+        )
+        self.color_label.pack()
+
+        # ── 大小 ──
+        self._section_label("大小")
+        self.size_var = tk.IntVar(value=cfg["size"])
+        frame = tk.Frame(self.win, bg=bg)
+        frame.pack(pady=2, fill="x", padx=30)
+        tk.Scale(
+            frame, from_=2, to=60, orient="horizontal", variable=self.size_var,
+            fg=fg, bg=bg, troughcolor="#333", highlightthickness=0,
+            command=lambda _: self._on_change()
+        ).pack(fill="x")
+
+        # ── 粗细 ──
+        self._section_label("线条粗细")
+        self.thick_var = tk.IntVar(value=cfg["thickness"])
+        frame = tk.Frame(self.win, bg=bg)
+        frame.pack(pady=2, fill="x", padx=30)
+        tk.Scale(
+            frame, from_=1, to=6, orient="horizontal", variable=self.thick_var,
+            fg=fg, bg=bg, troughcolor="#333", highlightthickness=0,
+            command=lambda _: self._on_change()
+        ).pack(fill="x")
+
+        # ── 中心点 ──
+        self._section_label("中心点大小")
+        self.dot_var = tk.IntVar(value=cfg["dot_size"])
+        frame = tk.Frame(self.win, bg=bg)
+        frame.pack(pady=2, fill="x", padx=30)
+        tk.Scale(
+            frame, from_=0, to=8, orient="horizontal", variable=self.dot_var,
+            fg=fg, bg=bg, troughcolor="#333", highlightthickness=0,
+            command=lambda _: self._on_change()
+        ).pack(fill="x")
+
+        # ── 透明度 ──
+        self._section_label("透明度")
+        self.opacity_var = tk.DoubleVar(value=cfg["opacity"])
+        frame = tk.Frame(self.win, bg=bg)
+        frame.pack(pady=2, fill="x", padx=30)
+        tk.Scale(
+            frame, from_=0.2, to=1.0, orient="horizontal",
+            variable=self.opacity_var, resolution=0.05,
+            fg=fg, bg=bg, troughcolor="#333", highlightthickness=0,
+            command=lambda _: self._on_change()
+        ).pack(fill="x")
+
+        # ── 描边 ──
+        self.outline_var = tk.BooleanVar(value=cfg["outline"])
+        tk.Checkbutton(
+            self.win, text="黑色描边（提高可见性）",
+            variable=self.outline_var,
+            fg=fg, bg=bg, selectcolor="#333", activebackground=bg,
+            command=self._on_change
+        ).pack(pady=8)
+
+        # ── 底部快捷键提示 ──
+        tk.Label(
+            self.win,
+            text="F1 隐藏 | F2 颜色 | F3/F4 大小 | ESC 退出",
+            fg="#666", bg=bg, font=("Microsoft YaHei", 8)
+        ).pack(side="bottom", pady=8)
+
+    def _section_label(self, text):
+        tk.Label(
+            self.win, text=text,
+            fg="#ccc", bg="#1e1e1e", font=("Microsoft YaHei", 10, "bold"),
+            anchor="w"
+        ).pack(pady=(8, 0), padx=30, fill="x")
+
+    def _on_change(self):
+        """配置变了，实时更新准星"""
+        cfg = self.app.config
+        cfg["style"] = self.style_var.get()
+        cfg["color"] = self.color_var.get()
+        cfg["size"] = self.size_var.get()
+        cfg["thickness"] = self.thick_var.get()
+        cfg["dot_size"] = self.dot_var.get()
+        cfg["opacity"] = self.opacity_var.get()
+        cfg["outline"] = self.outline_var.get()
+
+        # 更新颜色名称
+        if hasattr(self, "color_label"):
+            self.color_label.config(text=COLOR_NAMES.get(cfg["color"], cfg["color"]))
+
+        self.app.root.attributes("-alpha", cfg["opacity"])
+        self.app.draw_crosshair()
+        save_config(cfg)
+
+
+# ════════════════════════════════════════
+#  主程序
+# ════════════════════════════════════════
 
 class CrosshairOverlay:
     def __init__(self):
         self.config = load_config()
         self.visible = True
-        self.tray_icon = None
+        self.panel = None
 
         try:
             self.color_index = PRESET_COLORS.index(self.config["color"].upper())
@@ -149,219 +276,19 @@ class CrosshairOverlay:
 
         # 快捷键
         self._bind_hotkeys()
-        self.root.bind("<Escape>", lambda e: self.quit())
 
         # 绘制准星
         self.draw_crosshair()
 
-        # ─── 系统托盘 ───
-        if HAS_TRAY:
-            self._setup_tray()
+        # 自动弹出配置面板
+        self.root.after(300, self.show_config_panel)
 
         self.root.mainloop()
 
-    # ════════════════════════════════════════
-    #  系统托盘（在独立线程运行）
-    # ════════════════════════════════════════
-
-    def _setup_tray(self):
-        icon_img = create_tray_icon()
-        self.tray_icon = pystray.Icon(
-            "CrosshairOverlay", icon_img, "🎯 准星工具",
-            self._build_tray_menu()
-        )
-        t = threading.Thread(target=self.tray_icon.run, daemon=True)
-        t.start()
-
-    def _build_tray_menu(self):
-        # ── 样式 ──
-        style_items = []
-        for s in STYLES:
-            style_items.append(Item(
-                STYLE_NAMES[s],
-                lambda _, s=s: self._on_tray_set_style(s),
-                checked=lambda _, s=s: self.config["style"] == s,
-                radio=True,
-            ))
-
-        # ── 颜色 ──
-        color_items = []
-        for c in PRESET_COLORS:
-            color_items.append(Item(
-                COLOR_NAMES.get(c, c),
-                lambda _, c=c: self._on_tray_set_color(c),
-                checked=lambda _, c=c: self.config["color"].upper() == c.upper(),
-                radio=True,
-            ))
-
-        # ── 大小 ──
-        size_items = [
-            Item("小 (10)", lambda: self._on_tray_set_size(10),
-                 checked=lambda _: self.config["size"] == 10, radio=True),
-            Item("中 (20)", lambda: self._on_tray_set_size(20),
-                 checked=lambda _: self.config["size"] == 20, radio=True),
-            Item("大 (30)", lambda: self._on_tray_set_size(30),
-                 checked=lambda _: self.config["size"] == 30, radio=True),
-            Item("特大 (40)", lambda: self._on_tray_set_size(40),
-                 checked=lambda _: self.config["size"] == 40, radio=True),
-            pystray.Menu.SEPARATOR,
-            Item("➕ 增大 (+5)", lambda: self._on_tray_adjust_size(5)),
-            Item("➖ 减小 (-5)", lambda: self._on_tray_adjust_size(-5)),
-        ]
-
-        # ── 粗细 ──
-        thick_items = []
-        for t in [1, 2, 3, 4, 5]:
-            thick_items.append(Item(
-                f"{t}px",
-                lambda _, t=t: self._on_tray_set_thickness(t),
-                checked=lambda _, t=t: self.config["thickness"] == t,
-                radio=True,
-            ))
-
-        # ── 透明度 ──
-        opacity_items = []
-        for o in [0.5, 0.6, 0.7, 0.8, 0.9, 1.0]:
-            opacity_items.append(Item(
-                f"{int(o * 100)}%",
-                lambda _, o=o: self._on_tray_set_opacity(o),
-                checked=lambda _, o=o: abs(self.config["opacity"] - o) < 0.01,
-                radio=True,
-            ))
-
-        # ── 中心点 ──
-        dot_items = []
-        for d in [0, 1, 2, 3, 4, 5]:
-            dot_items.append(Item(
-                f"{d}px",
-                lambda _, d=d: self._on_tray_set_dot_size(d),
-                checked=lambda _, d=d: self.config["dot_size"] == d,
-                radio=True,
-            ))
-
-        menu = pystray.Menu(
-            Item(
-                lambda _: "🟢 显示中" if self.visible else "🔴 已隐藏",
-                lambda _: self._on_tray_toggle(),
-                default=True,
-            ),
-            pystray.Menu.SEPARATOR,
-            Item("🎯 样式", pystray.Menu(*style_items)),
-            Item("🎨 颜色", pystray.Menu(*color_items)),
-            Item("📏 大小", pystray.Menu(*size_items)),
-            Item("📐 粗细", pystray.Menu(*thick_items)),
-            Item("🔍 透明度", pystray.Menu(*opacity_items)),
-            Item("⏺ 中心点", pystray.Menu(*dot_items)),
-            Item(lambda _: "✅ 黑色描边" if self.config["outline"] else "⬜ 黑色描边",
-                 lambda _: self._on_tray_toggle_outline(),
-                 checked=lambda _: self.config["outline"]),
-            pystray.Menu.SEPARATOR,
-            Item("❌ 退出", lambda _: self._on_tray_quit()),
-        )
-        return menu
-
-    def _refresh_tray_menu(self):
-        """重建托盘菜单（在 pystray 线程中安全调用）"""
-        if self.tray_icon:
-            try:
-                self.tray_icon.menu = self._build_tray_menu()
-            except Exception:
-                pass
-
-    # ─── 托盘回调：通过 root.after 调度到 tkinter 主线程 ───
-
-    def _on_tray_set_style(self, s):
-        self.root.after(0, self._do_set_style, s)
-
-    def _on_tray_set_color(self, c):
-        self.root.after(0, self._do_set_color, c)
-
-    def _on_tray_set_size(self, s):
-        self.root.after(0, self._do_set_size, s)
-
-    def _on_tray_adjust_size(self, d):
-        self.root.after(0, self._do_adjust_size, d)
-
-    def _on_tray_set_thickness(self, t):
-        self.root.after(0, self._do_set_thickness, t)
-
-    def _on_tray_set_opacity(self, o):
-        self.root.after(0, self._do_set_opacity, o)
-
-    def _on_tray_set_dot_size(self, d):
-        self.root.after(0, self._do_set_dot_size, d)
-
-    def _on_tray_toggle(self):
-        self.root.after(0, self._do_toggle)
-
-    def _on_tray_toggle_outline(self):
-        self.root.after(0, self._do_toggle_outline)
-
-    def _on_tray_quit(self):
-        self.root.after(0, self.quit)
-
-    # ─── 实际执行（在 tkinter 主线程）───
-
-    def _do_set_style(self, s):
-        self.config["style"] = s
-        save_config(self.config)
-        self.draw_crosshair()
-        self._refresh_tray_menu()
-
-    def _do_set_color(self, c):
-        self.config["color"] = c
-        save_config(self.config)
-        self.draw_crosshair()
-        try:
-            self.color_index = PRESET_COLORS.index(c.upper())
-        except ValueError:
-            pass
-        self._refresh_tray_menu()
-
-    def _do_set_size(self, s):
-        self.config["size"] = s
-        save_config(self.config)
-        self.draw_crosshair()
-        self._refresh_tray_menu()
-
-    def _do_adjust_size(self, d):
-        self.config["size"] = max(2, self.config["size"] + d)
-        save_config(self.config)
-        self.draw_crosshair()
-        self._refresh_tray_menu()
-
-    def _do_set_thickness(self, t):
-        self.config["thickness"] = t
-        save_config(self.config)
-        self.draw_crosshair()
-        self._refresh_tray_menu()
-
-    def _do_set_opacity(self, o):
-        self.config["opacity"] = o
-        save_config(self.config)
-        self.root.attributes("-alpha", o)
-        self._refresh_tray_menu()
-
-    def _do_set_dot_size(self, d):
-        self.config["dot_size"] = d
-        save_config(self.config)
-        self.draw_crosshair()
-        self._refresh_tray_menu()
-
-    def _do_toggle(self):
-        self.visible = not self.visible
-        if self.visible:
-            self.root.deiconify()
-            self.draw_crosshair()
-        else:
-            self.root.withdraw()
-        self._refresh_tray_menu()
-
-    def _do_toggle_outline(self):
-        self.config["outline"] = not self.config["outline"]
-        save_config(self.config)
-        self.draw_crosshair()
-        self._refresh_tray_menu()
+    def show_config_panel(self):
+        if not self.panel:
+            self.panel = ConfigPanel(self)
+        self.panel.show()
 
     # ════════════════════════════════════════
     #  准星绘制
@@ -427,25 +354,38 @@ class CrosshairOverlay:
             circle_ring(cx, cy, size)
 
     # ════════════════════════════════════════
-    #  快捷键（在 tkinter 主线程中直接执行）
+    #  快捷键
     # ════════════════════════════════════════
 
     def _bind_hotkeys(self):
-        hk = self.config.get("hotkeys", {})
-        self.root.bind(f"<{hk.get('toggle', 'F1')}>", lambda e: self._do_toggle())
-        self.root.bind(f"<{hk.get('color', 'F2')}>", lambda e: self._do_set_color(
-            PRESET_COLORS[(self.color_index + 1) % len(PRESET_COLORS)]
-        ))
-        self.root.bind(f"<{hk.get('size_up', 'F3')}>", lambda e: self._do_adjust_size(5))
-        self.root.bind(f"<{hk.get('size_down', 'F4')}>", lambda e: self._do_adjust_size(-5))
+        self.root.bind("<F1>", lambda e: self.toggle_visibility())
+        self.root.bind("<F2>", lambda e: self.cycle_color())
+        self.root.bind("<F3>", lambda e: self.adjust_size(5))
+        self.root.bind("<F4>", lambda e: self.adjust_size(-5))
+        self.root.bind("<F5>", lambda e: self.show_config_panel())
+        self.root.bind("<Escape>", lambda e: self.quit())
+
+    def toggle_visibility(self):
+        self.visible = not self.visible
+        if self.visible:
+            self.root.deiconify()
+            self.draw_crosshair()
+        else:
+            self.root.withdraw()
+
+    def cycle_color(self):
+        self.color_index = (self.color_index + 1) % len(PRESET_COLORS)
+        self.config["color"] = PRESET_COLORS[self.color_index]
+        save_config(self.config)
+        self.draw_crosshair()
+
+    def adjust_size(self, delta: int):
+        self.config["size"] = max(2, self.config["size"] + delta)
+        save_config(self.config)
+        self.draw_crosshair()
 
     def quit(self):
         save_config(self.config)
-        if self.tray_icon:
-            try:
-                self.tray_icon.stop()
-            except Exception:
-                pass
         self.root.destroy()
         sys.exit(0)
 
